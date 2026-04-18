@@ -1,0 +1,4 @@
+data/raw_vods/*
+data/extracted_frames/*
+__pycache__/
+.DS_Store
