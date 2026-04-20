@@ -2,5 +2,3 @@ data/raw_vods/*
 data/extracted_frames/*
 data/sample_frame.png
 data/sample_frame_rois.png
-__pycache__/
-.DS_Store
