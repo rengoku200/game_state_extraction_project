@@ -135,36 +135,49 @@ def detect_heroes_in_killfeed(kill_feed_crop, templates, threshold=0.24):
     
     # 2. Define the 'Hero Lanes' 
     # (Left side for Psylocke/Hela, Right side for Elsa/Deadpool/Phoenix)
-    left_lane  = edges[:, :int(w * 0.30)]
-    right_lane = edges[:, int(w * 0.70):]
+    left_end = int(w * 0.30)
+    right_start = int(w * 0.70)
+    left_lane = edges[:, :left_end]
+    right_lane = edges[:, right_start:]
 
     detections = []
 
     for hero_name, template in templates.items():
         t_h, t_w = template.shape[:2]
+
         # --- CHECK LEFT (Killer) ---
-        res_l = cv2.matchTemplate(left_lane, template, cv2.TM_CCOEFF_NORMED)
-        _, score_l, _, loc_l = cv2.minMaxLoc(res_l)
-        
-        if score_l >= threshold:
-            detections.append({
-                "hero": hero_name, "score": score_l, 
-                "location": loc_l, "side": "killer",
-                "t_shape": (t_h, t_w),
-            })
+        if left_lane.shape[0] >= t_h and left_lane.shape[1] >= t_w:
+            res_l = cv2.matchTemplate(left_lane, template, cv2.TM_CCOEFF_NORMED)
+            _, score_l, _, loc_l = cv2.minMaxLoc(res_l)
+
+            if score_l >= threshold:
+                detections.append(
+                    {
+                        "hero": hero_name,
+                        "score": score_l,
+                        "location": loc_l,
+                        "side": "killer",
+                        "t_shape": (t_h, t_w),
+                    }
+                )
 
         # --- CHECK RIGHT (Victim) ---
-        res_r = cv2.matchTemplate(right_lane, template, cv2.TM_CCOEFF_NORMED)
-        _, score_r, _, loc_r = cv2.minMaxLoc(res_r)
-        
-        if score_r >= threshold:
-            # Shift X back to the original image coordinate
-            adj_x = loc_r[0] + int(w * 0.62)
-            detections.append({
-                "hero": hero_name, "score": score_r, 
-                "location": (adj_x, loc_r[1]), "side": "victim",
-                "t_shape": (t_h, t_w),
-            })
+        if right_lane.shape[0] >= t_h and right_lane.shape[1] >= t_w:
+            res_r = cv2.matchTemplate(right_lane, template, cv2.TM_CCOEFF_NORMED)
+            _, score_r, _, loc_r = cv2.minMaxLoc(res_r)
+
+            if score_r >= threshold:
+                # Shift X back to the original image coordinate
+                adj_x = loc_r[0] + right_start
+                detections.append(
+                    {
+                        "hero": hero_name,
+                        "score": score_r,
+                        "location": (adj_x, loc_r[1]),
+                        "side": "victim",
+                        "t_shape": (t_h, t_w),
+                    }
+                )
 
     detections.sort(key=lambda x: x["score"], reverse=True)
     return detections

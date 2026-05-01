@@ -4,7 +4,7 @@ from typing import Dict, List, Optional, Tuple
 
 import cv2
 
-from template_match import detect_heroes_in_killfeed, load_templates
+from template_match_for_model_train import detect_heroes_in_killfeed, load_templates
 
 
 def safe_makedirs(path: str) -> None:
