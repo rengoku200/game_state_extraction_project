@@ -5,19 +5,18 @@ import os
 
 
 #Kill feed (white background)
-kill_self_lower = np.array([0, 0, 200])   # Lower bound for red (BGR)
-
-kill_self_upper = np.array([179, 30, 255])
+kill_self_lower = np.array([0, 0, 230]) # High value (brightness) requirement
+kill_self_upper = np.array([180, 25, 255]) # Low saturation (pure white)
 
 
 #Kill feed (blue half = teamate killer)
-kill_team_lower = np.array([100, 80, 80])
-kill_team_upper = np.array([130, 255, 200])
+kill_team_lower = np.array([86,  51,  14])
+kill_team_upper = np.array([129, 255, 249])
 
 
 #Kill feed (yellow half = enemy killer)
-kill_enemy_lower = np.array([20,  150, 150])
-kill_enemy_upper = np.array([35,  255, 255])
+kill_enemy_lower = np.array([16,  51,  4])
+kill_enemy_upper = np.array([44,  255, 253])
 
 #Domination bar
 dom_enemy_lower = np.array([35,  150, 150])
@@ -106,39 +105,48 @@ def get_horizontal_fill(mask):
 
 
 def analyze_kill_feed(kill_feed_crop):
-    """
-    Analyze a kill feed crop to detect kill events and classify them.
-    
-    Returns a dict with:
-    - self_kill: True if TAP13 got a kill (white box detected)
-    - team_kill: True if a teammate got a kill (blue+yellow box)
-    - enemy_kill: True if an enemy got a kill (yellow+blue box)
-    - kill_count: estimated number of kill entries visible
-    """
-    white_mask  = apply_hsv_mask(kill_feed_crop, kill_self_lower,  kill_self_upper)
+    white_mask  = apply_hsv_mask(kill_feed_crop, kill_self_lower,  kill_self_upper) 
     blue_mask   = apply_hsv_mask(kill_feed_crop, kill_team_lower,  kill_team_upper)
     yellow_mask = apply_hsv_mask(kill_feed_crop, kill_enemy_lower, kill_enemy_upper)
 
-    white_ratio  = get_fill_ratio(white_mask)
+        # Check each row for white pixel coverage
+    row_white = np.sum(white_mask, axis=1) / white_mask.shape[1]
+    
+    # A real kill entry row has VERY high white coverage (>50%)
+    # Diagonal lines/explosions have scattered white pixels not full rows
+    strong_white_rows = np.sum(row_white > 0.35)
+    white_ratio = strong_white_rows / white_mask.shape[0]
+
+    # Additional structural check:
+    # Count how many CONSECUTIVE rows are white
+    # Real kill entries are solid rectangles — at least 15 consecutive white rows
+    max_consecutive = 0
+    current_consecutive = 0
+    for val in row_white:
+        if val > 0.35:
+            current_consecutive += 1
+            max_consecutive = max(max_consecutive, current_consecutive)
+        else:
+            current_consecutive = 0
+    
+    # Must have at least 15 consecutive white rows to be a real kill entry
+    has_white_band = max_consecutive >= 10
+
     blue_ratio   = get_fill_ratio(blue_mask)
     yellow_ratio = get_fill_ratio(yellow_mask)
 
-
-    # Classify based on dominant color combination
-    # White dominant = self kill
-    # Blue + yellow present = team kill (both colors in same frame)
-    # Yellow dominant, little blue = enemy kill
-    self_kill  = white_ratio  > 0.08
-    team_kill  = blue_ratio   > 0.05 and yellow_ratio > 0.05
-    enemy_kill = yellow_ratio > 0.08 and blue_ratio   < 0.03
+    self_kill  = has_white_band and white_ratio > 0.25
+    team_kill  = has_white_band and blue_ratio > 0.05 and yellow_ratio > 0.02
+    enemy_kill = has_white_band and yellow_ratio > 0.02 and blue_ratio < 0.03
 
     return {
-        "self_kill":   self_kill,
-        "team_kill":   team_kill,
-        "enemy_kill":  enemy_kill,
-        "white_ratio": round(white_ratio,  3),
-        "blue_ratio":  round(blue_ratio,   3),
-        "yellow_ratio":round(yellow_ratio, 3),
+        "self_kill":          self_kill,
+        "team_kill":          team_kill,
+        "enemy_kill":         enemy_kill,
+        "white_ratio":        round(white_ratio, 3),
+        "blue_ratio":         round(blue_ratio,  3),
+        "yellow_ratio":       round(yellow_ratio, 3),
+        "max_consec_white":   max_consecutive,
     }
 
 

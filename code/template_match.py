@@ -6,29 +6,39 @@ import os
 
 template_directory = "data/templates"
 
-match_threshold = .64
-
-
-
+match_threshold = .28
 
 
 def load_templates(templates_directory):
-    """
-    Loads hero images from the specified directory.
-    Returns a dict mapping hero names to their images.
-
-    -Converted to grayscale for NCC (reduces complexity)
-    """
     templates = {}
+    target_size = (50, 24) 
+
     for filename in os.listdir(templates_directory):
         if filename.endswith(".png") or filename.endswith(".jpg"):
-            hero_name = filename.replace(".png", "").replace(".jpg", "")
+            # Clean up the name (e.g., "psylocke_lord")
+            base_hero_name = filename.replace(".png", "").replace(".jpg", "")
             path = os.path.join(templates_directory, filename)
+            
+            # Load in grayscale
             img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
 
             if img is not None:
-                templates[hero_name] = img
-                print(f"  Loaded template: {hero_name} {img.shape}")
+                # 1. Standardize the size
+                img_resized = cv2.resize(img, target_size)
+                
+                # 2. Create the mirrored version! (1 means horizontal flip)
+                img_mirrored = cv2.flip(img_resized, 1)
+                
+                # 3. Extract edges for both
+                edges_normal = cv2.Canny(img_resized, 50, 150)
+                edges_mirrored = cv2.Canny(img_mirrored, 50, 150)
+                
+                # 4. Save both into the dictionary
+                templates[f"{base_hero_name}_normal"] = edges_normal
+                templates[f"{base_hero_name}_mirrored"] = edges_mirrored
+                
+                print(f"  Loaded template: {base_hero_name} (Normal & Mirrored)")
+                
     return templates
 
 
@@ -72,7 +82,7 @@ def normalized_cross_correlation(image_patch, template):
     return numerator / denominator
 
 
-def slide_and_match(kill_feed_gry, template, stride = 2):
+def slide_and_match(kill_feed_gry, template, stride = 1):
     """
     Slide the template across the kill feed image and compute NCC
     at every position. Returns the best score and its location.
@@ -116,49 +126,43 @@ def slide_and_match(kill_feed_gry, template, stride = 2):
 
 
 
-def detect_heroes_in_killfeed(kill_feed_crop, templates, threshold=match_threshold):
-    """
-    Run template matching for all hero portraits against a kill feed crop.
+def detect_heroes_in_killfeed(kill_feed_crop, templates, threshold=0.24):
+    # 1. Prep the edges
+    gray = cv2.cvtColor(kill_feed_crop, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(gray, 30, 150)
     
-    For each template, slides it across the kill feed and checks if
-    the best NCC score exceeds our confidence threshold.
+    h, w = edges.shape
     
-    Returns a list of detected heroes with their locations and scores:
-    [
-        {"hero": "psylocke", "score": 0.82, "location": (x, y)},
-        {"hero": "jeff",     "score": 0.71, "location": (x, y)},
-        ...
-    ]
-    """
-    # Convert kill feed to grayscale for NCC
-    kill_feed_gray = cv2.cvtColor(kill_feed_crop, cv2.COLOR_BGR2GRAY)
+    # 2. Define the 'Hero Lanes' 
+    # (Left side for Psylocke/Hela, Right side for Elsa/Deadpool/Phoenix)
+    left_lane  = edges[:, :int(w * 0.30)]
+    right_lane = edges[:, int(w * 0.70):]
 
     detections = []
 
     for hero_name, template in templates.items():
-        best_score, best_loc, score_map = slide_and_match(kill_feed_gray, template)
-
-        if best_score < threshold:
-            continue
-
-        # Find ALL locations above threshold in score map
-        t_h, t_w = template.shape
-        locations = np.where(score_map >= threshold)
-
-        for row, col in zip(locations[0], locations[1]):
-            score = score_map[row, col]
-            x = col * 2  # multiply by stride
-            y = row * 2
-
+        # --- CHECK LEFT (Killer) ---
+        res_l = cv2.matchTemplate(left_lane, template, cv2.TM_CCOEFF_NORMED)
+        _, score_l, _, loc_l = cv2.minMaxLoc(res_l)
+        
+        if score_l >= threshold:
             detections.append({
-                "hero":     hero_name,
-                "score":    round(float(score), 3),
-                "location": (x, y),
-                "t_shape":  (t_h, t_w),
+                "hero": hero_name, "score": score_l, 
+                "location": loc_l, "side": "killer"
             })
 
-    # Sort by score descending so best matches are first
-    detections = non_max_suppression(detections, overlap_thresh=0.3)
+        # --- CHECK RIGHT (Victim) ---
+        res_r = cv2.matchTemplate(right_lane, template, cv2.TM_CCOEFF_NORMED)
+        _, score_r, _, loc_r = cv2.minMaxLoc(res_r)
+        
+        if score_r >= threshold:
+            # Shift X back to the original image coordinate
+            adj_x = loc_r[0] + int(w * 0.62)
+            detections.append({
+                "hero": hero_name, "score": score_r, 
+                "location": (adj_x, loc_r[1]), "side": "victim"
+            })
+
     detections.sort(key=lambda x: x["score"], reverse=True)
     return detections
 

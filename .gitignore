@@ -2,3 +2,4 @@ data/raw_vods/*
 data/extracted_frames/*
 data/sample_frame.png
 data/sample_frame_rois.png
+code/__pycache__/
