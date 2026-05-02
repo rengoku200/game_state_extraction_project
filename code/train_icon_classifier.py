@@ -24,27 +24,24 @@ class TrainConfig:
 
 
 def make_transforms(image_size: int):
-    train_transforms = transforms.Compose(
-        [
-            transforms.Resize((image_size, image_size)),
-            transforms.RandomApply(
-                [transforms.ColorJitter(brightness=0.15, contrast=0.15, saturation=0.10)],
-                p=0.7,
-            ),
-            transforms.RandomGrayscale(p=0.05),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-        ]
-    )
+    # Transformation funnel 
+    train_transforms = transforms.Compose([
+        transforms.Resize((image_size, image_size)),
+        transforms.RandomApply([transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1)], p=0.8), # Simulates map lighting bleed
+        transforms.RandomApply([transforms.GaussianBlur(kernel_size=3)], p=0.5), # Simulates fast motion blur
+        transforms.RandomAffine(degrees=0, translate=(0.05, 0.05), scale=(0.9, 1.1)), # Simulates imperfect UI crops
+        transforms.ToTensor(),
+        transforms.Lambda(lambda x: torch.clamp(x + torch.randn_like(x) * 0.05, 0, 1)), # Simulates video compression noise
+        transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+    ])
 
-    val_transforms = transforms.Compose(
-        [
-            transforms.Resize((image_size, image_size)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-        ]
-    )
+    val_transforms = transforms.Compose([
+        transforms.Resize((image_size, image_size)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+    ])
     return train_transforms, val_transforms
+
 
 
 def accuracy(logits: torch.Tensor, y: torch.Tensor) -> float:
@@ -83,26 +80,30 @@ def main() -> int:
 
     train_transforms, val_transforms = make_transforms(cfg.image_size)
 
-    base_ds = datasets.ImageFolder(cfg.data_dir)
-    n = len(base_ds)
+    # 1. Load the dataset TWICE to avoid the PyTorch shared-reference bug
+    base_train_ds = datasets.ImageFolder(cfg.data_dir, transform=train_transforms)
+    base_val_ds = datasets.ImageFolder(cfg.data_dir, transform=val_transforms)
+    
+    n = len(base_train_ds)
     if n < 10:
         print(f"Dataset too small: {n} images in {cfg.data_dir}")
         return 1
 
+    # 2. Generate random indices
+    indices = torch.randperm(n, generator=torch.Generator().manual_seed(cfg.seed)).tolist()
     val_n = max(1, int(n * cfg.val_frac))
     train_n = n - val_n
-    train_ds, val_ds = random_split(
-        base_ds, [train_n, val_n], generator=torch.Generator().manual_seed(cfg.seed)
-    )
+    
+    # 3. Create Subsets using the distinct datasets
+    from torch.utils.data import Subset
+    val_ds = Subset(base_val_ds, indices[:val_n])
+    train_ds = Subset(base_train_ds, indices[val_n:])   
 
-    # Assign transforms after split (ImageFolder stores them on the dataset object).
-    train_ds.dataset.transform = train_transforms
-    val_ds.dataset.transform = val_transforms
+    train_loader = DataLoader(train_ds, batch_size=cfg.batch_size, shuffle=True, num_workers=0)
+    val_loader = DataLoader(val_ds, batch_size=cfg.batch_size, shuffle=False, num_workers=0)
 
-    train_loader = DataLoader(train_ds, batch_size=cfg.batch_size, shuffle=True, num_workers=2)
-    val_loader = DataLoader(val_ds, batch_size=cfg.batch_size, shuffle=False, num_workers=2)
-
-    num_classes = len(base_ds.classes)
+    # Print dataset sizes
+    num_classes = len(base_train_ds.classes)
     print(f"Classes: {num_classes}")
     print(f"Train/val: {train_n}/{val_n}")
 
@@ -164,11 +165,13 @@ def main() -> int:
 
         if val_acc > best_val_acc:
             best_val_acc = val_acc
-            torch.save({"model": model.state_dict(), "classes": base_ds.classes, "cfg": asdict(cfg)}, best_path)
+            # FIX: Use base_train_ds.classes here too
+            torch.save({"model": model.state_dict(), "classes": base_train_ds.classes, "cfg": asdict(cfg)}, best_path)
 
     # Save metadata
+    # FIX: And use base_train_ds.classes here
     with open(os.path.join(cfg.out_dir, "classes.json"), "w", encoding="utf-8") as f:
-        json.dump(base_ds.classes, f, indent=2)
+        json.dump(base_train_ds.classes, f, indent=2)
     with open(os.path.join(cfg.out_dir, "train_config.json"), "w", encoding="utf-8") as f:
         json.dump(asdict(cfg), f, indent=2)
 

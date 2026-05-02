@@ -3,7 +3,12 @@ import numpy as np
 import os
 import csv
 import sys
-
+import torch
+import torchvision.models as models
+from torchvision import transforms
+import torch.nn as nn
+from PIL import Image
+import torch.nn.functional as F
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -146,14 +151,79 @@ def detect_pov_switch(kill_data, idx, last_tap13_death_frame):
 
     return is_killcam, last_tap13_death_frame
 
+#Deep learning detection
+def load_cnn_classifier(weights_path="results/icon_classifier/best.pt"):
+    """Loads the trained ResNet18 model into memory."""
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    checkpoint = torch.load(weights_path, map_location=device, weights_only=False)
+    classes = checkpoint["classes"]
+    
+    # Rebuild the ResNet18 architecture
+    model = models.resnet18(weights=None)
+    model.fc = nn.Linear(model.fc.in_features, len(classes))
+    model.load_state_dict(checkpoint["model"])
+    model.eval() # Set to evaluation mode (turns off dropout/batchnorm)
+    model.to(device)
+    
+    # The exact same transforms from your training script
+    val_transforms = transforms.Compose([
+        transforms.Resize((64, 64)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+    ])
+    return model, classes, device, val_transforms
 
-def run_pipeline():
+def classify_crop_cnn(crop_bgr, model, classes, device, transform, threshold=0.60):
+    """Feeds a tiny 50x24 image crop into the CNN and returns the hero name."""
+    # Convert OpenCV (BGR) to PyTorch Image (RGB)
+    rgb = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB)
+    img = Image.fromarray(rgb)
+    
+    # Apply transforms and add batch dimension [1, C, H, W]
+    tensor = transform(img).unsqueeze(0).to(device)
+    
+    with torch.no_grad():
+        logits = model(tensor)
+        # Convert raw logits to percentages (0.0 to 1.0)
+        probs = F.softmax(logits, dim=1)
+        max_prob, pred_idx = torch.max(probs, 1)
+        
+    # THE SHIELD RESTORER: If the CNN is confused, force it to output "unknown"
+    if max_prob.item() < threshold:
+        return "unknown"
+        
+    return classes[pred_idx.item()]
+
+def detect_heroes_cnn(kill_crop, model, classes, device, transform):
+    """Mimics your old template matcher by slicing the lanes and calling the CNN."""
+    h, w, _ = kill_crop.shape
+    
+    # Lane Locking: Left 35% is Killer, Right 35% is Victim
+    killer_crop = kill_crop[:, :int(w*0.35)]
+    victim_crop = kill_crop[:, int(w*0.65):]
+    
+    killer_name = classify_crop_cnn(killer_crop, model, classes, device, transform)
+    victim_name = classify_crop_cnn(victim_crop, model, classes, device, transform)
+    
+    # Return in the exact dictionary format your pipeline expects
+    return [
+        {"hero": killer_name, "side": "killer"},
+        {"hero": victim_name, "side": "victim"}
+    ]
+
+
+def run_pipeline(mode="heuristic"):
     os.makedirs(results_directory, exist_ok=True)
 
     # Load hero templates
     print("Loading templates...")
     templates = load_templates(templates_directory)
     print(f"Loaded {len(templates)} templates\n")
+
+    if mode == "cnn":
+        print("Loading Deep Learning Classifier...")
+        cnn_model, cnn_classes, cnn_device, cnn_transform = load_cnn_classifier()
+        print(f"Loaded ResNet18 capable of identifying {len(cnn_classes)} heroes\n")
 
     # Get sorted frame lists for all 4 ROIs
     kill_frames   = get_sorted_frames(kill_feed_directory)
@@ -267,7 +337,13 @@ def run_pipeline():
             )
 
             if kill_detected and not is_killcam:
-                detections = detect_heroes_in_killfeed(kill_crop, templates)
+                # THE COMMAND SWITCH
+                if mode == "cnn":
+                    detections = detect_heroes_cnn(kill_crop, cnn_model, cnn_classes, cnn_device, cnn_transform)
+                else:
+                    # Fallback to your 17/18 Template Matcher
+                    detections = detect_heroes_in_killfeed(kill_crop, templates)
+                
                 killer_hero = "unknown"
                 victim_hero = "unknown"
 
@@ -389,5 +465,10 @@ def run_pipeline():
 
 
 if __name__ == "__main__":
-    run_pipeline()
-
+    import argparse
+    parser = argparse.ArgumentParser(description="Marvel Rivals Game State Extractor")
+    parser.add_argument("--mode", choices=["heuristic", "cnn"], default="heuristic", 
+                        help="Choose 'heuristic' for template matching or 'cnn' for Deep Learning")
+    args = parser.parse_args()
+    print(f"--- STARTING PIPELINE IN {args.mode.upper()} MODE ---")
+    run_pipeline(mode=args.mode)
