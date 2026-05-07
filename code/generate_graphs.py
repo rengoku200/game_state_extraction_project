@@ -18,6 +18,9 @@ def generate_presentation_graphs(results_dir, output_dir):
     df_cont = pd.read_csv(continuous_path)
     df_events = pd.read_csv(events_path)
 
+    cols_to_fix = ['team_fill', 'enemy_fill', 'health_pct']
+    df_cont[cols_to_fix] = df_cont[cols_to_fix].replace(0, float('nan')).ffill()
+
     # Set the style for presentation-ready charts
     sns.set_theme(style="darkgrid")
     
